@@ -1,9 +1,11 @@
 #if !defined(GREWRITE_H)
 # define GREWRITE_H
 
-#define QUEUE_NUM 65109
 #define NF_PREROUTING 0
 #define NF_POSTROUTING 4
+
+#define DEFAULT_QUEUE_NUM 65109
+#define DEFAULT_PORT 22205
 
 #define ETHERTYPE_IP 0x0800
 #define ETHERTYPE_OSI 0x00fe
@@ -17,6 +19,7 @@ struct config {
 	int df;
 	int tos;
 	int queue;
+	int rmem;
 	int check_rmem_max;
 };
 
@@ -168,6 +171,19 @@ static inline uint8_t iso_get_reserved(const uint8_t *isohdr)
 static inline void iso_set_reserved(uint8_t *isohdr, uint8_t reserved)
 {
 	isohdr[7] = reserved;
+}
+
+static void hexdump(uint8_t *data, size_t len)
+{
+        for (size_t i = 0; i < len; i++) {
+                if (i % 8 == 0)
+                        printf(" ");
+                else if (i % 16 == 0)
+                        printf("\n");
+                printf("%02x ", data[i]);
+        }
+        printf("\n");
+
 }
 
 #endif

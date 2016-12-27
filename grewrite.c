@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <getopt.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <linux/netfilter.h>
@@ -18,7 +19,7 @@ static void udp_recalc_cksum(uint8_t *udphdr, in_addr_t src, in_addr_t dst)
 	uint16_t *d16 = (uint16_t *)udphdr;
 
 	udp_set_cksum(udphdr, 0);
-	
+
 	cksum += ntohs(src & 0xffff);
 	cksum += ntohs(src >> 16);
 	cksum += ntohs(dst & 0xffff);
@@ -53,19 +54,6 @@ static void ip_recalc_cksum(uint8_t *iphdr)
 		cksum = (cksum & 0xffff) + (cksum >> 16);
 
 	ip_set_cksum(iphdr, ~cksum);
-}
-
-static void dump(uint8_t *data, size_t len)
-{
-	for (size_t i = 0; i < len; i++) {
-		if (i % 8 == 0)
-			printf(" ");
-		else if (i % 16 == 0)
-			printf("\n");
-		printf("%02x ", data[i]);
-	}
-	printf("\n");
-
 }
 
 static void bytes_transform_out(uint8_t *buf, size_t size, const char *key)
@@ -126,7 +114,7 @@ static void gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *co
 	udp_recalc_cksum(grehdr, ip_get_src(iphdr), ip_get_dst(iphdr));
 
 	ip_set_proto(iphdr, IPPROTO_UDP);
-	ip_recalc_cksum(iphdr);	
+	ip_recalc_cksum(iphdr);
 }
 
 static void udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *conf)
@@ -139,8 +127,8 @@ static void udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *co
 
 	memset(udphdr, 0, 4);
 	gre_set_proto(udphdr, ETHERTYPE_IP);
-	
-	/* 
+
+	/*
          * Restore IP ver/ihl/tos (stored in checksum field), tot_len
          * from UDP length, and recalculate inner IP checksum.
          */
@@ -181,7 +169,6 @@ static void iso_isis_restore_header(uint8_t *isohdr)
 	iso_set_reserved(isohdr, 0);
 }
 
-
 static int is_eligible_iso_isis_header(uint8_t *isohdr)
 {
 	return iso_get_proto(isohdr) == ISO_PROTO_ISIS &&
@@ -204,7 +191,7 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 {
 	uint8_t *data = NULL;
 	size_t len = 0;
-	
+
 	struct nfqnl_msg_packet_hdr *ph;
 
 	if ((ph = nfq_get_msg_packet_hdr(nfa)) == NULL) {
@@ -225,39 +212,143 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 				udp_transform_gre(data, data + hlen, conf);
 		}
 	}
-	
+
 	return nfq_set_verdict(qh, ntohl(ph->packet_id), NF_ACCEPT, len, data);
 }
 
-int main(int argc, char *argv[]) 
+int parse_args(int argc, char *argv[], struct config *conf)
+{
+	int c;
+
+	static const struct option options[] = {
+		{ "sport",  required_argument, NULL, 's' },
+		{ "dport",  required_argument, NULL, 'd' },
+		{ "df-bit", required_argument, NULL, 'f' },
+		{ "tos",    required_argument, NULL, 't' },
+		{ "key",    required_argument, NULL, 'k' },
+		{ "queue",  required_argument, NULL, 'q' },
+		{ "rmem",   required_argument, NULL, 'm' },
+		{ "help",   no_argument,       NULL, 'h' },
+		{ NULL,     0,                 NULL, 0   }
+	};
+
+	while (1) {
+		int index = 0;
+		int n;
+		char *err;
+
+		if ((c = getopt_long(argc, argv, "s:d:f:t:k:q:m:",
+			options, &index)) < 0)
+			break;
+
+		switch (c) {
+		case 's':
+			n = strtol(optarg, &err, 0);
+			if (*err != 0) {
+				fprintf(stderr, "%s: %s: source port is invalid.\n", argv[0], optarg);
+				exit(2);
+			} else if (n < 1 || n > 65535) {
+				fprintf(stderr, "%s: %d: source port is out of range.\n", argv[0], n);
+				exit(2);
+			}
+			conf->sport = n;
+			break;
+		case 'd':
+			n = strtol(optarg, &err, 0);
+			if (*err != 0) {
+				fprintf(stderr, "%s: %s: destination port is invalid.\n", argv[0], optarg);
+				exit(2);
+			} else if (n < 1 || n > 65535) {
+				fprintf(stderr, "%s: %d: destination port is out of range.\n", argv[0], n);
+				exit(2);
+			}
+			conf->dport = n;
+			break;
+		case 'f':
+			if (strcmp(optarg, "1") == 0 || strcasecmp(optarg, "yes") == 0 ||
+					strcasecmp(optarg, "true") == 0) {
+				conf->df = 1;
+			} else if (strcmp(optarg, "0") == 0 || strcasecmp(optarg, "no") == 0 ||
+					strcasecmp(optarg, "false") == 0) {
+				conf->df = 0;
+			} else {
+				fprintf(stderr, "%s: %s: invalid option for don't fragment bit.\n", argv[0], optarg);
+				exit(2);
+			}
+			break;
+		case 't':
+			n = strtol(optarg, &err, 0);
+			if (*err != 0) {
+				fprintf(stderr, "%s: %s: invalid value for type of service.\n", argv[0], optarg);
+				exit(2);
+			} else if (n < 0 || n > 255) {
+				fprintf(stderr, "%s: %d: type of service is out of range.\n", argv[0], n);
+				exit(2);
+			}
+			break;
+		case 'k':
+			conf->key = optarg;
+			break;
+		case 'q':
+			n = strtol(optarg, &err, 0);
+			if (*err != 0) {
+				fprintf(stderr, "%s: %s: invalid value for nfqueue number.\n", argv[0], optarg);
+				exit(2);
+			} else if (n < 0 || n > 65535) {
+				fprintf(stderr, "%s: %d: nfqueue number is out of range.\n", argv[0], n);
+				exit(2);
+			}
+			conf->queue = n;
+			break;
+		case 'm':
+			n = strtol(optarg, &err, 0);
+			if (*err != 0) {
+				fprintf(stderr, "%s: %s: invalid value for recvbuf size.\n", argv[0], optarg);
+				exit(2);
+			} else if (n < 1) {
+				fprintf(stderr, "%s: %d: recvbuf size is out of range.\n", argv[0], n);
+				exit(2);
+			}
+			conf->rmem = n;
+			break;
+		case 'h':
+
+
+			break;
+		default:
+			exit(2);
+			break;
+		}
+	}
+
+	return 0;
+}
+
+int main(int argc, char *argv[])
 {
 	struct config conf = {
-		.sport = 65109 - 8192 - 5102,
-		.dport = 5102,
-		.queue = QUEUE_NUM,
-		.key = ".susageP"
+		.queue = DEFAULT_QUEUE_NUM,
+		.sport = DEFAULT_PORT,
+		.dport = DEFAULT_PORT,
+		.key = NULL,
+		.df = -1,	/* Don't mess with DF bit */
+		.tos = -1,	/* Don't mess with TOS */
+		.rmem = -1	/* Don't mess with SO_RECVBUF */
 	};
 
 	struct nfq_handle *h;
 	struct nfq_q_handle *qh;
 	char buf[4096] __attribute__ ((aligned));
-	int rcvbuf = 32768 * 1024;
 	int rv;
 	int fd;
 
-	if (argc != 3) {
-		fprintf(stderr, "usage: %s <sport> <dport>\n", argv[0]);
-		exit(1);
-	}
-
-	conf.sport = atoi(argv[1]);
-	conf.dport = atoi(argv[2]);
+	parse_args(argc, argv, &conf);
 
 	if ((h = nfq_open()) == NULL) {
 		fprintf(stderr, "%s: failed to open nfq\n", argv[0]);
 		exit(1);
 	}
-	
+
 	if (nfq_bind_pf(h, AF_INET) < 0) {
 		fprintf(stderr, "%s: failed to bind for AF_NET: %s\n", argv[0], strerror(errno));
 		exit(1);
@@ -279,8 +370,8 @@ int main(int argc, char *argv[])
 	}
 
 	fd = nfq_fd(h);
-	
-	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
+
+	if (conf.rmem > -1 && setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &conf.rmem, sizeof(conf.rmem)) < 0) {
 		fprintf(stderr, "%s: failed to set receive buffer size\n", argv[0]);
 		exit(1);
 	}
@@ -288,7 +379,7 @@ int main(int argc, char *argv[])
 	while (1) {
 		while ((rv = recv(fd, buf, sizeof(buf), 0)) >= 0)
 			nfq_handle_packet(h, buf, rv);
-		if (errno == ENOBUFS) 
+		if (errno != ENOBUFS)
 			fprintf(stderr, "%s: out of buffer space, ignoring.\n", argv[0]);
 		else
 			break;
