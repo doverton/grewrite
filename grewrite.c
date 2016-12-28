@@ -41,7 +41,7 @@ static int is_eligible_iso_isis_header(uint8_t *isohdr)
 
 static int is_eligible_ipv6_header(uint8_t *ip6hdr, struct config *conf)
 {
-	return (ipv6_get_flow_label(ip6hdr) == 0 || conf->noflow) &&
+	return (ipv6_get_flow_label(ip6hdr) == 0 || conf->flow_labels) &&
 		ipv6_get_payload_len(ip6hdr) != 0; /* e.g, for jumbograms */
 }
 
@@ -88,6 +88,41 @@ static void ip_recalc_cksum(uint8_t *iphdr)
 		cksum = (cksum & 0xffff) + (cksum >> 16);
 
 	ip_set_cksum(iphdr, ~cksum);
+}
+
+static void ipv6_gen_flow_label(uint8_t *ip6hdr)
+{
+	const struct in6_addr *src = ipv6_get_src(ip6hdr);
+	const struct in6_addr *dst = ipv6_get_dst(ip6hdr);
+	uint8_t proto = ipv6_get_next_header(ip6hdr);
+	uint16_t sport = 0;
+	uint16_t dport = 0;
+
+	uint32_t label = 5381;
+
+	if (proto == IPPROTO_UDP || proto == IPPROTO_UDPLITE ||
+			proto == IPPROTO_TCP || proto == IPPROTO_SCTP) {
+		sport = udp_get_sport(ip6hdr + 40);
+		dport = udp_get_dport(ip6hdr + 40);
+	} else if (proto == IPPROTO_ICMPV6) {
+		sport = ntohs(*(uint16_t *)(ip6hdr + 40));
+		dport = ntohs(*(uint16_t *)(ip6hdr + 44));
+	}
+
+	for (int i = 0; i < 16; i++) {
+		label = ((label << 5) + label) + src->s6_addr[i];
+		label = ((label << 5) + label) + dst->s6_addr[i];
+	}
+
+	label = ((label << 5) + label) + (sport & 0xff);
+	label = ((label << 5) + label) + (dport & 0xff);
+	label = ((label << 5) + label) + ((sport >> 8) & 0xff);
+	label = ((label << 5) + label) + ((dport >> 8) & 0xff);
+	label = ((label << 5) + label) + proto;
+
+	label &= 0xfffff;
+
+	ipv6_set_flow_label(ip6hdr, label == 0 ? 1 : label);
 }
 
 static void bytes_transform_out(uint8_t *buf, size_t size, const char *key)
@@ -235,8 +270,10 @@ static int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *con
 				ip_set_cksum(inner, ipv6_get_payload_len(inner));
 				ipv6_set_payload_len(inner, udp_len - 44);
 
-				if (conf->noflow)
+				if (conf->flow_labels == 1)
 					ipv6_set_flow_label(inner, 0);
+				else if (conf->flow_labels == 2)
+					ipv6_gen_flow_label(inner);
 			}
 		}
 	}
@@ -302,6 +339,7 @@ void usage(const char *prog) {
 	printf("Rewrite simple GRE packets as UDP and vice versa via NFQUEUE.\n\n");
 	printf("  -d, --dport=PORT	Intercept UDP packets on 'PORT'.\n");
 	printf("  -f, --df-bit=BIT	Set or clear IP do-not-fragment bit.\n");
+	printf("  -g, --ipv6-genflow    Generate new IPv6 flow labels (implies -n).\n");
 	printf("  -k, --key=KEY		Obfuscate UDP packet contents with KEY.\n");
 	printf("  -n, --ipv6-noflow     Clobber IPv6 flow label even when set.\n");
 	printf("  -m, --queue-maxlen=N	Set maximum queue length (default %u).\n", DEFAULT_QUEUE_MAXLEN);
@@ -312,12 +350,14 @@ void usage(const char *prog) {
 	printf("Note: Due to the size difference between the simplest GRE and UDP\n");
 	printf("      headers, %s can only rewrite packets for which special\n", prog);
 	printf("      handlers have been written; at this time IPv4, IPv6, and\n");
-	printf("      IS-IS may be transported.\n\n");
-	printf("IPv6: RFC compliant IPv6 tunneling is only supported when flow\n");
+	printf("      IS-IS may be transported. If a packet cannot be rewritten\n");
+	printf("      it will be forwarded unmodified.\n\n");
+	printf("IPv6: RFC compliant IPv6 transport is only possible when flow\n");
 	printf("      labels are turned off; you can do this with:\n\n");
 	printf("        sysctl net.ipv6.auto_flowlabels=0\n\n");
 	printf("      Alternatively, pass the '--ipv6-noflow' option to zero\n");
-	printf("      flow labels. Note that this violates RFC6437.\n");
+	printf("      flow labels, or '--ipv6-genflow' to generate new ones.\n");
+	printf("      Note that both of these options violate RFC 6437.\n");
 }
 
 int parse_args(int argc, char *argv[], struct config *conf)
@@ -325,17 +365,18 @@ int parse_args(int argc, char *argv[], struct config *conf)
 	int c;
 
 	static const struct option options[] = {
-		{ "sport",       required_argument, NULL, 's' },
-		{ "dport",       required_argument, NULL, 'd' },
-		{ "df-bit",      required_argument, NULL, 'f' },
-		{ "tos",         required_argument, NULL, 't' },
-		{ "key",         required_argument, NULL, 'k' },
-		{ "queue",       required_argument, NULL, 'q' },
-		{ "rcvbuf",      required_argument, NULL, 'r' },
-		{ "ipv6-noflow", no_argument,       NULL, 'n' },
-		{ "help",        no_argument,       NULL, 'h' },
-		{ "verbose",     no_argument,       NULL, 'v' },
-		{  NULL,         0,                 NULL,  0  }
+		{ "sport",        required_argument, NULL, 's' },
+		{ "dport",        required_argument, NULL, 'd' },
+		{ "df-bit",       required_argument, NULL, 'f' },
+		{ "tos",          required_argument, NULL, 't' },
+		{ "key",          required_argument, NULL, 'k' },
+		{ "queue",        required_argument, NULL, 'q' },
+		{ "rcvbuf",       required_argument, NULL, 'r' },
+		{ "ipv6-noflow",  no_argument,       NULL, 'n' },
+		{ "ipv6-genflow", no_argument,       NULL, 'g' },
+		{ "help",         no_argument,       NULL, 'h' },
+		{ "verbose",      no_argument,       NULL, 'v' },
+		{  NULL,          0,                 NULL,  0  }
 	};
 
 	conf->prog = argv[0];
@@ -345,7 +386,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		int n;
 		char *err;
 
-		if ((c = getopt_long(argc, argv, "s:d:f:t:k:q:r:m:nhv",
+		if ((c = getopt_long(argc, argv, "s:d:f:t:k:q:r:m:nghv",
 			options, &index)) < 0)
 			break;
 
@@ -431,7 +472,10 @@ int parse_args(int argc, char *argv[], struct config *conf)
 			conf->rcvbuf = n;
 			break;
 		case 'n':
-			conf->noflow = 1;
+			conf->flow_labels = 1;
+			break;
+		case 'g':
+			conf->flow_labels = 2;
 			break;
 		case 'h':
 			usage(argv[0]);
@@ -457,10 +501,10 @@ int main(int argc, char *argv[])
 		.sport = DEFAULT_PORT,
 		.dport = DEFAULT_PORT,
 		.key = NULL,
-		.df = -1,	/* Don't mess with DF bit */
-		.tos = -1,	/* Don't mess with TOS */
-		.rcvbuf = -1,	/* Don't mess with SO_RCVBUF */
-		.noflow = 0,    /* Don't clobber IPv6 flowlabel if set */
+		.df = -1,	  /* Don't mess with DF bit */
+		.tos = -1,	  /* Don't mess with TOS */
+		.rcvbuf = -1,	  /* Don't mess with SO_RCVBUF */
+		.flow_labels = 0, /* Don't mess with IPv6 if flowlabels are set */
 		.verbose = 0,
 	};
 

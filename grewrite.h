@@ -25,7 +25,7 @@ struct config {
 	uint16_t queue;
 	uint32_t queue_maxlen;
 	int rcvbuf;
-	int noflow;
+	int flow_labels;
 	int verbose;
 	int check_rmem_max;
 };
@@ -140,12 +140,12 @@ static inline void ip_set_cksum(uint8_t *iphdr, uint16_t cksum)
 
 static inline uint32_t ipv6_get_flow_label(const uint8_t *ip6hdr)
 {
-	return ntohl(*(const uint32_t *)ip6hdr) & 1048575;
+	return ntohl(*(const uint32_t *)ip6hdr) & 0xfffff;
 }
 
 static inline void ipv6_set_flow_label(uint8_t *ip6hdr, uint32_t flow_label)
 {
-	*(uint32_t *)ip6hdr = htonl((ntohl(*(uint32_t *)ip6hdr) & ~1048575) | (flow_label & 1048575));
+	*(uint32_t *)ip6hdr = htonl((ntohl(*(uint32_t *)ip6hdr) & ~0xfffff) | (flow_label & 0xfffff));
 }
 
 static inline uint16_t ipv6_get_payload_len(const uint8_t *ip6hdr)
@@ -161,6 +161,21 @@ static inline void ipv6_set_payload_len(uint8_t *ip6hdr, uint16_t payload_len)
 static inline uint8_t ipv6_get_next_header(const uint8_t *ip6hdr)
 {
 	return ip6hdr[6];
+}
+
+static inline const struct in6_addr *ipv6_get_src(const uint8_t *ip6hdr)
+{
+	return (const struct in6_addr *)(ip6hdr + 8);
+}
+
+static inline const struct in6_addr *ipv6_get_dst(const uint8_t *ip6hdr)
+{
+	return (const struct in6_addr *)(ip6hdr + 24);
+}
+
+static inline uint16_t icmp6_get_typecode(const uint8_t *icmp6hdr)
+{
+	return ntohs(*(uint16_t *)icmp6hdr);
 }
 
 static inline uint8_t iso_get_proto(const uint8_t *isohdr)
