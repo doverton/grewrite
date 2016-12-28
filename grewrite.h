@@ -23,8 +23,9 @@ struct config {
 	int tos;
 	int queue;
 	int rmem;
-	int check_rmem_max;
+	int noflow;
 	int verbose;
+	int check_rmem_max;
 };
 
 static inline uint16_t gre_get_proto(const uint8_t *grehdr)
@@ -129,7 +130,12 @@ static inline void ip_set_cksum(uint8_t *iphdr, uint16_t cksum)
 
 static inline uint32_t ipv6_get_flow_label(const uint8_t *ip6hdr)
 {
-	return ntohl(*(const uint32_t *)ip6hdr) & 2047;
+	return ntohl(*(const uint32_t *)ip6hdr) & 1048575;
+}
+
+static inline void ipv6_set_flow_label(uint8_t *ip6hdr, uint32_t flow_label)
+{
+	*(uint32_t *)ip6hdr = htonl((ntohl(*(uint32_t *)ip6hdr) & ~1048575) | (flow_label & 1048575));
 }
 
 static inline uint16_t ipv6_get_payload_len(const uint8_t *ip6hdr)

@@ -39,9 +39,9 @@ static int is_eligible_iso_isis_header(uint8_t *isohdr)
 		iso_get_reserved(isohdr) == 0;
 }
 
-static int is_eligible_ipv6_header(uint8_t *ip6hdr)
+static int is_eligible_ipv6_header(uint8_t *ip6hdr, struct config *conf)
 {
-	return ipv6_get_flow_label(ip6hdr) == 0 &&
+	return (ipv6_get_flow_label(ip6hdr) == 0 || conf->noflow) &&
 		ipv6_get_payload_len(ip6hdr) != 0; /* e.g, for jumbograms */
 }
 
@@ -150,7 +150,7 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *con
 		 * octets lived - which puts them where the IPv4 checksum field,
 		 * giving the decoder a single place to hunt out the IP version.
 		 */
-		if (is_eligible_ipv6_header(inner)) {
+		if (is_eligible_ipv6_header(inner, conf)) {
 			udp_len = ipv6_get_payload_len(inner) + 44;
 			ipv6_set_payload_len(inner, ip_get_cksum(inner));
 			ip_set_cksum(inner, *(uint16_t *)inner);
@@ -231,6 +231,9 @@ static int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *con
 
 				ip_set_cksum(inner, ipv6_get_payload_len(inner));
 				ipv6_set_payload_len(inner, udp_len - 44);
+
+				if (conf->noflow)
+					ipv6_set_flow_label(inner, 0);
 			}
 		}
 	}
@@ -298,6 +301,7 @@ void usage(const char *prog) {
 	printf("  -f, --df-bit=BIT	Set or clear IP do-not-fragment bit.\n");
 	printf("  -k, --key=KEY		Obfuscate UDP packet contents with KEY.\n");
 	printf("  -m, --rmem=RMEM	Set SO_RCVBUF size on NFQUEUE socket.\n");
+	printf("  -n, --ipv6-noflow     Clobber IPv6 flow label even when set.\n");
 	printf("  -q, --queue=NFQUEUE	Which NFQUEUE to create.\n");
 	printf("  -s, --sport=PORT	Emit UDP packets from 'PORT'.\n");
 	printf("  -t, --tos=TOS		Set IP type of service field to TOS.\n\n");
@@ -305,6 +309,11 @@ void usage(const char *prog) {
 	printf("      headers, %s can only rewrite packets for which special\n", prog);
 	printf("      handlers have been written; at this time IPv4, IPv6, and\n");
 	printf("      IS-IS may be transported.\n\n");
+	printf("IPv6: RFC compliant IPv6 tunneling is only supported when flow\n");
+	printf("      labels are turned off; you can do this with:\n\n");
+	printf("        sysctl net.ipv6.auto_flowlabels=0\n\n");
+	printf("      Alternatively, pass the '--ipv6-noflow' option to zero\n");
+	printf("      flow labels. Note that this violates RFC6437.\n");
 }
 
 int parse_args(int argc, char *argv[], struct config *conf)
@@ -312,16 +321,17 @@ int parse_args(int argc, char *argv[], struct config *conf)
 	int c;
 
 	static const struct option options[] = {
-		{ "sport",   required_argument, NULL, 's' },
-		{ "dport",   required_argument, NULL, 'd' },
-		{ "df-bit",  required_argument, NULL, 'f' },
-		{ "tos",     required_argument, NULL, 't' },
-		{ "key",     required_argument, NULL, 'k' },
-		{ "queue",   required_argument, NULL, 'q' },
-		{ "rmem",    required_argument, NULL, 'm' },
-		{ "help",    no_argument,       NULL, 'h' },
-		{ "verbose", no_argument,       NULL, 'v' },
-		{ NULL,     0,                  NULL, 0   }
+		{ "sport",       required_argument, NULL, 's' },
+		{ "dport",       required_argument, NULL, 'd' },
+		{ "df-bit",      required_argument, NULL, 'f' },
+		{ "tos",         required_argument, NULL, 't' },
+		{ "key",         required_argument, NULL, 'k' },
+		{ "queue",       required_argument, NULL, 'q' },
+		{ "rmem",        required_argument, NULL, 'm' },
+		{ "ipv6-noflow", no_argument,       NULL, 'n' },
+		{ "help",        no_argument,       NULL, 'h' },
+		{ "verbose",     no_argument,       NULL, 'v' },
+		{  NULL,         0,                 NULL,  0  }
 	};
 
 	conf->prog = argv[0];
@@ -331,7 +341,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		int n;
 		char *err;
 
-		if ((c = getopt_long(argc, argv, "s:d:f:t:k:q:m:hv",
+		if ((c = getopt_long(argc, argv, "s:d:f:t:k:q:m:nhv",
 			options, &index)) < 0)
 			break;
 
@@ -405,6 +415,9 @@ int parse_args(int argc, char *argv[], struct config *conf)
 			}
 			conf->rmem = n;
 			break;
+		case 'n':
+			conf->noflow = 1;
+			break;
 		case 'h':
 			usage(argv[0]);
 			exit(0);
@@ -413,6 +426,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 			conf->verbose = 1;
 			break;
 		default:
+			printf("wtf %c\n", c);
 			exit(2);
 			break;
 		}
@@ -431,7 +445,8 @@ int main(int argc, char *argv[])
 		.df = -1,	/* Don't mess with DF bit */
 		.tos = -1,	/* Don't mess with TOS */
 		.rmem = -1,	/* Don't mess with SO_RECVBUF */
-		.verbose = 0
+		.noflow = 0,    /* Don't clobber IPv6 flowlabel if set */
+		.verbose = 0,
 	};
 
 	struct nfq_handle *h;
