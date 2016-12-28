@@ -303,9 +303,10 @@ void usage(const char *prog) {
 	printf("  -d, --dport=PORT	Intercept UDP packets on 'PORT'.\n");
 	printf("  -f, --df-bit=BIT	Set or clear IP do-not-fragment bit.\n");
 	printf("  -k, --key=KEY		Obfuscate UDP packet contents with KEY.\n");
-	printf("  -m, --rmem=RMEM	Set SO_RCVBUF size on NFQUEUE socket.\n");
 	printf("  -n, --ipv6-noflow     Clobber IPv6 flow label even when set.\n");
-	printf("  -q, --queue=NFQUEUE	Which NFQUEUE to create.\n");
+	printf("  -m, --queue-maxlen=N	Set maximum queue length (default %u).\n", DEFAULT_QUEUE_MAXLEN);
+	printf("  -q, --queue-num=NFQ	Which queue number to use (default %u).\n", DEFAULT_QUEUE_NUM);
+	printf("  -r, --rcvbuf=SIZE	Set SO_RCVBUF size on NFQUEUE socket.\n");
 	printf("  -s, --sport=PORT	Emit UDP packets from 'PORT'.\n");
 	printf("  -t, --tos=TOS		Set IP type of service field to TOS.\n\n");
 	printf("Note: Due to the size difference between the simplest GRE and UDP\n");
@@ -330,7 +331,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		{ "tos",         required_argument, NULL, 't' },
 		{ "key",         required_argument, NULL, 'k' },
 		{ "queue",       required_argument, NULL, 'q' },
-		{ "rmem",        required_argument, NULL, 'm' },
+		{ "rcvbuf",      required_argument, NULL, 'r' },
 		{ "ipv6-noflow", no_argument,       NULL, 'n' },
 		{ "help",        no_argument,       NULL, 'h' },
 		{ "verbose",     no_argument,       NULL, 'v' },
@@ -344,7 +345,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		int n;
 		char *err;
 
-		if ((c = getopt_long(argc, argv, "s:d:f:t:k:q:m:nhv",
+		if ((c = getopt_long(argc, argv, "s:d:f:t:k:q:r:m:nhv",
 			options, &index)) < 0)
 			break;
 
@@ -399,15 +400,26 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		case 'q':
 			n = strtol(optarg, &err, 0);
 			if (*err != 0) {
-				fprintf(stderr, "%s: %s: invalid value for nfqueue number.\n", argv[0], optarg);
+				fprintf(stderr, "%s: %s: invalid value for queue number.\n", argv[0], optarg);
 				exit(2);
 			} else if (n < 0 || n > 65535) {
-				fprintf(stderr, "%s: %d: nfqueue number is out of range.\n", argv[0], n);
+				fprintf(stderr, "%s: %d: queue number is out of range.\n", argv[0], n);
 				exit(2);
 			}
 			conf->queue = n;
 			break;
 		case 'm':
+			n = strtol(optarg, &err, 0);
+			if (*err != 0) {
+				fprintf(stderr, "%s: %s: invalid value for maxiumum queue length.\n", argv[0], optarg);
+				exit(2);
+			} else if (n < 1) {
+				fprintf(stderr, "%s: %d: maximum queue length is out of range.\n", argv[0], n);
+				exit(2);
+			}
+			conf->queue_maxlen = n;
+			break;
+		case 'r':
 			n = strtol(optarg, &err, 0);
 			if (*err != 0) {
 				fprintf(stderr, "%s: %s: invalid value for recvbuf size.\n", argv[0], optarg);
@@ -416,7 +428,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 				fprintf(stderr, "%s: %d: recvbuf size is out of range.\n", argv[0], n);
 				exit(2);
 			}
-			conf->rmem = n;
+			conf->rcvbuf = n;
 			break;
 		case 'n':
 			conf->noflow = 1;
@@ -429,7 +441,6 @@ int parse_args(int argc, char *argv[], struct config *conf)
 			conf->verbose = 1;
 			break;
 		default:
-			printf("wtf %c\n", c);
 			exit(2);
 			break;
 		}
@@ -442,12 +453,13 @@ int main(int argc, char *argv[])
 {
 	struct config conf = {
 		.queue = DEFAULT_QUEUE_NUM,
+		.queue_maxlen = DEFAULT_QUEUE_MAXLEN,
 		.sport = DEFAULT_PORT,
 		.dport = DEFAULT_PORT,
 		.key = NULL,
 		.df = -1,	/* Don't mess with DF bit */
 		.tos = -1,	/* Don't mess with TOS */
-		.rmem = -1,	/* Don't mess with SO_RECVBUF */
+		.rcvbuf = -1,	/* Don't mess with SO_RCVBUF */
 		.noflow = 0,    /* Don't clobber IPv6 flowlabel if set */
 		.verbose = 0,
 	};
@@ -475,7 +487,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	if (nfq_set_queue_maxlen(qh, 262144) < 0) {
+	if (nfq_set_queue_maxlen(qh, conf.queue_maxlen) < 0) {
 		fprintf(stderr, "%s: failed to set queue length", argv[0]);
 		exit(1);
 	}
@@ -487,9 +499,21 @@ int main(int argc, char *argv[])
 
 	fd = nfq_fd(h);
 
-	if (conf.rmem > -1 && setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &conf.rmem, sizeof(conf.rmem)) < 0) {
-		fprintf(stderr, "%s: failed to set receive buffer size\n", argv[0]);
-		exit(1);
+	if (conf.rcvbuf > -1) {
+		int rcvbuf = conf.rcvbuf;
+		socklen_t len = sizeof(rcvbuf);
+
+		if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, len) < 0) {
+			fprintf(stderr, "%s: failed to set receive buffer size\n", argv[0]);
+			exit(1);
+		}
+		if (conf.verbose && getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &len) == 0) {
+			if (rcvbuf / 2 < conf.rcvbuf) {
+				fprintf(stderr, "%s: receive buffer size was capped to %d, ", argv[0], rcvbuf / 2);
+				fprintf(stderr, "increase this by running:\n\n");
+				fprintf(stderr, "    sysctl net.core.rmem_max=%d\n\n", conf.rcvbuf);
+			}
+		}
 	}
 
 	while (1) {

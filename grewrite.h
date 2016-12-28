@@ -5,6 +5,7 @@
 #define NF_POSTROUTING 4
 
 #define DEFAULT_QUEUE_NUM 65109
+#define DEFAULT_QUEUE_MAXLEN 4096
 #define DEFAULT_PORT 22205
 
 #define ETHERTYPE_IPV4 0x0800
@@ -21,8 +22,9 @@ struct config {
 	const char *key;
 	int df;
 	int tos;
-	int queue;
-	int rmem;
+	uint16_t queue;
+	uint32_t queue_maxlen;
+	int rcvbuf;
 	int noflow;
 	int verbose;
 	int check_rmem_max;
