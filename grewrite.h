@@ -7,12 +7,15 @@
 #define DEFAULT_QUEUE_NUM 65109
 #define DEFAULT_PORT 22205
 
-#define ETHERTYPE_IP 0x0800
-#define ETHERTYPE_OSI 0x00fe
+#define ETHERTYPE_IPV4 0x0800
+#define ETHERTYPE_IPV6 0x86dd
+#define ETHERTYPE_PPP 0x880b
+#define ETHERTYPE_ISO 0x00fe
 
 #define ISO_PROTO_ISIS 0x83
 
 struct config {
+	const char *prog;
 	uint16_t sport;
 	uint16_t dport;
 	const char *key;
@@ -21,6 +24,7 @@ struct config {
 	int queue;
 	int rmem;
 	int check_rmem_max;
+	int verbose;
 };
 
 static inline uint16_t gre_get_proto(const uint8_t *grehdr)
@@ -35,7 +39,7 @@ static inline void gre_set_proto(uint8_t *grehdr, uint16_t proto)
 
 static inline uint16_t udp_get_sport(const uint8_t *udphdr)
 {
-	return ntohs(*(const uint16_t *)udphdr);	
+	return ntohs(*(const uint16_t *)udphdr);
 }
 
 static inline void udp_set_sport(uint8_t *udphdr, uint16_t sport)
@@ -68,6 +72,16 @@ static inline void udp_set_cksum(uint8_t *udphdr, uint16_t cksum)
 	*(uint16_t *)(udphdr + 6) = htons(cksum);
 }
 
+static inline uint8_t ip_get_version(const uint8_t *iphdr)
+{
+	return iphdr[0] >> 4;
+}
+
+static inline uint8_t ip_get_hl(const uint8_t *iphdr)
+{
+	return (*iphdr & 7);
+}
+
 static inline uint16_t ip_get_tot_len(const uint8_t *iphdr)
 {
 	return ntohs(*(const uint16_t *)(iphdr + 2));
@@ -78,9 +92,9 @@ static inline void ip_set_tot_len(uint8_t *iphdr, uint16_t tot_len)
 	*(uint16_t *)(iphdr + 2) = htons(tot_len);
 }
 
-static inline uint8_t ip_get_hl(const uint8_t *iphdr)
+static inline uint16_t ip_get_frag(const uint8_t *iphdr)
 {
-	return (*iphdr & 7);
+	return ntohs(*(const uint16_t *)(iphdr + 6));
 }
 
 static inline uint8_t ip_get_proto(const uint8_t *iphdr)
@@ -111,6 +125,26 @@ static inline uint16_t ip_get_cksum(const uint8_t *iphdr)
 static inline void ip_set_cksum(uint8_t *iphdr, uint16_t cksum)
 {
 	*(uint16_t *)(iphdr + 10) = htons(cksum);
+}
+
+static inline uint32_t ipv6_get_flow_label(const uint8_t *ip6hdr)
+{
+	return ntohl(*(const uint32_t *)ip6hdr) & 2047;
+}
+
+static inline uint16_t ipv6_get_payload_len(const uint8_t *ip6hdr)
+{
+	return ntohs(*(const uint16_t *)(ip6hdr + 4));
+}
+
+static inline void ipv6_set_payload_len(uint8_t *ip6hdr, uint16_t payload_len)
+{
+	*(uint16_t *)(ip6hdr + 4) = htons(payload_len);
+}
+
+static inline uint8_t ipv6_get_next_header(const uint8_t *ip6hdr)
+{
+	return ip6hdr[6];
 }
 
 static inline uint8_t iso_get_proto(const uint8_t *isohdr)
@@ -153,27 +187,32 @@ static inline void iso_set_sysid_len(uint8_t *isohdr, uint8_t sysid_len)
 	isohdr[3] = sysid_len;
 }
 
+static inline uint8_t iso_get_pdu_type(const uint8_t *isohdr)
+{
+	return isohdr[4];
+}
+
 static inline uint8_t iso_get_version2(const uint8_t *isohdr)
 {
-	return isohdr[6];
+	return isohdr[5];
 }
 
 static inline void iso_set_version2(uint8_t *isohdr, uint8_t version2)
 {
-	isohdr[6] = version2;
+	isohdr[5] = version2;
 }
 
 static inline uint8_t iso_get_reserved(const uint8_t *isohdr)
 {
-	return isohdr[7];
+	return isohdr[6];
 }
 
 static inline void iso_set_reserved(uint8_t *isohdr, uint8_t reserved)
 {
-	isohdr[7] = reserved;
+	isohdr[6] = reserved;
 }
 
-static void hexdump(uint8_t *data, size_t len)
+static inline void hexdump(uint8_t *data, size_t len)
 {
         for (size_t i = 0; i < len; i++) {
                 if (i % 8 == 0)
