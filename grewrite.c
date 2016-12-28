@@ -184,6 +184,9 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *con
 
 		udp_recalc_cksum(grehdr, ip_get_src(iphdr), ip_get_dst(iphdr));
 
+		if (conf->df > -1)
+			ip_set_df(iphdr, conf->df ? 1 : 0);
+
 		ip_set_proto(iphdr, IPPROTO_UDP);
 		ip_recalc_cksum(iphdr);
 		return 0;

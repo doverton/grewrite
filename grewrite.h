@@ -98,6 +98,14 @@ static inline uint16_t ip_get_frag(const uint8_t *iphdr)
 	return ntohs(*(const uint16_t *)(iphdr + 6));
 }
 
+static inline void ip_set_df(uint8_t *iphdr, uint8_t df)
+{
+	if (df)
+		iphdr[6] |= (1 << 6);
+	else
+		iphdr[6] &= ~(1 << 6);
+}
+
 static inline uint8_t ip_get_proto(const uint8_t *iphdr)
 {
 	return iphdr[9];
