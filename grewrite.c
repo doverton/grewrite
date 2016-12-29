@@ -4,6 +4,7 @@
 #include <string.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <net/ethernet.h>
 #include <netinet/in.h>
 #include <getopt.h>
 #include <linux/ip.h>
@@ -165,7 +166,7 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *con
 	uint16_t udp_len = 0;
 	uint8_t *inner = grehdr + 4;
 
-	if (type == ETHERTYPE_IPV4) {
+	if (type == ETHERTYPE_IP) {
 		/*
 		 * Inner is an IP header - UDP clobbers ver/ihl/tos/tot_len.
                  * Strategy here is to copy ver/ihl/tos to the IP checksum
@@ -260,7 +261,7 @@ static int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *con
 			uint8_t version = ip_get_version(inner);
 
 			if (version == 4) {
-				type = ETHERTYPE_IPV4;
+				type = ETHERTYPE_IP;
 
 				ip_set_tot_len(inner, udp_len - 4);
 				ip_recalc_cksum(inner);
@@ -306,7 +307,7 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 
 	type = ntohs(ph->hw_protocol);
 
-	if (type == ETHERTYPE_IPV4 && (len = nfq_get_payload(nfa, &data)) > 0 &&
+	if (type == ETHERTYPE_IP && (len = nfq_get_payload(nfa, &data)) > 0 &&
 		is_simple_ip_header(data)) {
 
 		size_t hlen = ip_get_hl(data) << 2;
