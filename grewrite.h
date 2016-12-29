@@ -1,9 +1,6 @@
 #if !defined(GREWRITE_H)
 # define GREWRITE_H
 
-#define NF_PREROUTING 0
-#define NF_POSTROUTING 4
-
 #define DEFAULT_QUEUE_NUM 65109
 #define DEFAULT_QUEUE_MAXLEN 4096
 #define DEFAULT_PORT 22205
@@ -15,13 +12,14 @@
 
 struct config {
 	const char *prog;
+	const char *tapdev;
+	uint16_t queue;
+	uint32_t queue_maxlen;
 	uint16_t sport;
 	uint16_t dport;
 	const char *key;
 	int df;
 	int tos;
-	uint16_t queue;
-	uint32_t queue_maxlen;
 	int rcvbuf;
 	int flow_labels;
 	int verbose;
@@ -253,5 +251,26 @@ static inline void hexdump(uint8_t *data, size_t len)
         printf("\n");
 
 }
+
+static inline int is_simple_ip_header(const uint8_t *iphdr)
+{
+        uint16_t frag = ip_get_frag(iphdr);
+
+        return ((frag >> 13) & 1) == 0 && (frag & 8191) == 0;
+}
+
+static inline int is_eligible_gre_header(uint8_t *grehdr)
+{
+        return grehdr[0] == 0 && grehdr[1] == 0;
+}
+
+static inline int is_eligible_udp_header(uint8_t *udphdr, struct config *conf)
+{
+        return udp_get_sport(udphdr) == conf->dport &&
+                udp_get_dport(udphdr) == conf->sport;
+}
+
+int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *conf);
+int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *conf);
 
 #endif

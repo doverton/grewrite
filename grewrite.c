@@ -3,33 +3,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <getopt.h>
 #include <arpa/inet.h>
 #include <net/ethernet.h>
 #include <netinet/in.h>
-#include <getopt.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
-#include <linux/netfilter.h>
-#include <libnetfilter_queue/libnetfilter_queue.h>
 #include "grewrite.h"
-
-static int is_simple_ip_header(const uint8_t *iphdr)
-{
-	uint16_t frag = ip_get_frag(iphdr);
-
-	return ((frag >> 13) & 1) == 0 && (frag & 8191) == 0;
-}
-
-static int is_eligible_gre_header(uint8_t *grehdr)
-{
-	return grehdr[0] == 0 && grehdr[1] == 0;
-}
-
-static int is_eligible_udp_header(uint8_t *udphdr, struct config *conf)
-{
-	return udp_get_sport(udphdr) == conf->dport &&
-		udp_get_dport(udphdr) == conf->sport;
-}
+#include "nfqueue.h"
 
 static int is_eligible_iso_isis_header(uint8_t *isohdr)
 {
@@ -160,7 +141,7 @@ static void bytes_transform_in(uint8_t *buf, size_t size, const char *key)
 	}
 }
 
-static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *conf)
+int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *conf)
 {
 	uint16_t type = gre_get_proto(grehdr);
 	uint16_t udp_len = 0;
@@ -232,7 +213,7 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *con
 	}
 }
 
-static int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *conf)
+int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *conf)
 {
 	uint8_t *inner = udphdr + 4;
 	uint16_t udp_len = udp_get_len(udphdr);
@@ -289,50 +270,6 @@ static int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *con
 		/* Packet could not be transformed */
 		return 1;
 	}
-}
-
-static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *nfa, void *ptr)
-{
-	struct config *conf = ptr;
-	uint8_t *data = NULL;
-	size_t len = 0;
-
-	struct nfqnl_msg_packet_hdr *ph;
-	uint16_t type;
-
-	if ((ph = nfq_get_msg_packet_hdr(nfa)) == NULL) {
-		fprintf(stderr, "bad packet?\n");
-		return -1;
-	}
-
-	type = ntohs(ph->hw_protocol);
-
-	if (type == ETHERTYPE_IP && (len = nfq_get_payload(nfa, &data)) > 0 &&
-		is_simple_ip_header(data)) {
-
-		size_t hlen = ip_get_hl(data) << 2;
-		uint8_t proto = ip_get_proto(data);
-
-		if (proto == IPPROTO_GRE && is_eligible_gre_header(data + hlen)) {
-			if (gre_transform_udp(data, data + hlen, conf) != 0) {
-				data = NULL;
-				len = 0;
-			}
-		} else if (proto == IPPROTO_UDP && is_eligible_udp_header(data + hlen, conf)) {
-			if (udp_transform_gre(data, data + hlen, conf) != 0) {
-				data = NULL;
-				len  = 0;
-			}
-		} else {
-			if (conf->verbose)
-				fprintf(stderr, "%s: ignoring packet with IP proto 0x%02x\n", conf->prog, proto);
-		}
-	} else {
-		if (conf->verbose)
-			fprintf(stderr, "%s: ignoring packet with type 0x%04x", conf->prog, type);
-	}
-
-	return nfq_set_verdict(qh, ntohl(ph->packet_id), NF_ACCEPT, len, data);
 }
 
 void usage(const char *prog) {
@@ -509,74 +446,8 @@ int main(int argc, char *argv[])
 		.verbose = 0,
 	};
 
-	struct nfq_handle *h;
-	struct nfq_q_handle *qh;
-	char buf[4096] __attribute__ ((aligned));
-	int rv;
-	int fd;
-
 	parse_args(argc, argv, &conf);
 
-	if ((h = nfq_open()) == NULL) {
-		fprintf(stderr, "%s: failed to open nfq\n", argv[0]);
-		exit(1);
-	}
-
-	if (nfq_bind_pf(h, AF_INET) < 0) {
-		fprintf(stderr, "%s: failed to bind for AF_NET: %s\n", argv[0], strerror(errno));
-		exit(1);
-	}
-
-	if ((qh = nfq_create_queue(h, conf.queue, cb, &conf)) == NULL) {
-		fprintf(stderr, "%s: failed to create queue", argv[0]);
-		exit(1);
-	}
-
-	if (nfq_set_queue_maxlen(qh, conf.queue_maxlen) < 0) {
-		fprintf(stderr, "%s: failed to set queue length", argv[0]);
-		exit(1);
-	}
-
-	if (nfq_set_mode(qh, NFQNL_COPY_PACKET, 0xffff) < 0) {
-		fprintf(stderr, "%s: failed to set copy packet mode\n", argv[0]);
-		exit(1);
-	}
-
-	fd = nfq_fd(h);
-
-	if (conf.rcvbuf > -1) {
-		int rcvbuf = conf.rcvbuf;
-		socklen_t len = sizeof(rcvbuf);
-
-		if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, len) < 0) {
-			fprintf(stderr, "%s: failed to set receive buffer size\n", argv[0]);
-			exit(1);
-		}
-		if (conf.verbose && getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &len) == 0) {
-			if (rcvbuf / 2 < conf.rcvbuf) {
-				fprintf(stderr, "%s: receive buffer size was capped to %d, ", argv[0], rcvbuf / 2);
-				fprintf(stderr, "increase this by running:\n\n");
-				fprintf(stderr, "    sysctl net.core.rmem_max=%d\n\n", conf.rcvbuf);
-			}
-		}
-	}
-
-	while (1) {
-		while ((rv = recv(fd, buf, sizeof(buf), 0)) >= 0)
-			nfq_handle_packet(h, buf, rv);
-		if (errno != ENOBUFS) {
-			if (conf.verbose)
-				fprintf(stderr, "%s: out of buffer space, ignoring.\n", argv[0]);
-		} else {
-			break;
-		}
-	}
-	if (errno != 0)
-		fprintf(stderr, "%s: failed to recv: %s\n", argv[0], strerror(errno));
-
-	nfq_destroy_queue(qh);
-	nfq_close(h);
-
-	return 0;
+	return do_nfqueue(&conf);
 }
 
