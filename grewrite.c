@@ -11,6 +11,25 @@
 #include <linux/udp.h>
 #include "grewrite.h"
 #include "nfqueue.h"
+#include "tuntap.h"
+
+static int is_simple_ip_header(const uint8_t *iphdr)
+{
+	uint16_t frag = ip_get_frag(iphdr);
+
+	return ((frag >> 13) & 1) == 0 && (frag & 8191) == 0;
+}
+
+static int is_eligible_gre_header(uint8_t *grehdr, size_t size)
+{
+	return size >= 4 && grehdr[0] == 0 && grehdr[1] == 0;
+}
+
+static int is_eligible_udp_header(uint8_t *udphdr, size_t size, struct config *conf)
+{
+	return size >= 8 && udp_get_sport(udphdr) == conf->dport &&
+		udp_get_dport(udphdr) == conf->sport;
+}
 
 static int is_eligible_iso_isis_header(uint8_t *isohdr)
 {
@@ -141,7 +160,7 @@ static void bytes_transform_in(uint8_t *buf, size_t size, const char *key)
 	}
 }
 
-int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *conf)
+static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, size_t size, struct config *conf)
 {
 	uint16_t type = gre_get_proto(grehdr);
 	uint16_t udp_len = 0;
@@ -150,10 +169,10 @@ int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *conf)
 	if (type == ETHERTYPE_IP) {
 		/*
 		 * Inner is an IP header - UDP clobbers ver/ihl/tos/tot_len.
-                 * Strategy here is to copy ver/ihl/tos to the IP checksum
-                 * field (we calculate a UDP checksum to replace this), and
-                 * adjust tot_len then store in udp_len.
-                 */
+		 * Strategy here is to copy ver/ihl/tos to the IP checksum
+		 * field (we calculate a UDP checksum to replace this), and
+		 * adjust tot_len then store in udp_len.
+		 */
 		udp_len = ip_get_tot_len(inner) + 4;
 		ip_set_cksum(inner, *(uint16_t *)inner);
 	} else if (type == ETHERTYPE_IPV6) {
@@ -174,7 +193,7 @@ int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *conf)
 		}
 	} else if (type == ETHERTYPE_ISO) {
 		/*
-                 * Inner is an 8-byte ISO header - UDP clobbers protocol/
+		 * Inner is an 8-byte ISO header - UDP clobbers protocol/
 		 * pdu_hlen/version/sysid_len. We first make sure this actually
 		 * is an IS-IS packet. If that's the case, the strategy is to
 		 * copy pdu_hlen to version2. sysid_len is required to be
@@ -213,7 +232,7 @@ int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *conf)
 	}
 }
 
-int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *conf)
+static int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, size_t size, struct config *conf)
 {
 	uint8_t *inner = udphdr + 4;
 	uint16_t udp_len = udp_get_len(udphdr);
@@ -272,19 +291,45 @@ int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *conf)
 	}
 }
 
+int transform_ip_packet(uint8_t *iphdr, size_t size, struct config *conf)
+{
+	size_t hlen = ip_get_hl(iphdr) << 2;
+	uint8_t proto = ip_get_proto(iphdr);
+
+	if (!is_simple_ip_header(iphdr)) {
+		if (conf->verbose)
+			fprintf(stderr, "%s: ignoring IP packet due to possible fragmentation.\n", conf->prog);
+		return -1;
+	}
+
+	size -= hlen;
+
+	if (proto == IPPROTO_GRE && is_eligible_gre_header(iphdr + hlen, size)) {
+	        return gre_transform_udp(iphdr, iphdr + hlen, size, conf);
+	} else if (proto == IPPROTO_UDP && is_eligible_udp_header(iphdr + hlen, size, conf)) {
+	        return udp_transform_gre(iphdr, iphdr + hlen, size, conf);
+	} else {
+	        if (conf->verbose)
+			fprintf(stderr, "%s: ignoring packet with IP proto 0x%02x\n", conf->prog, proto);
+
+		return -1;
+	}
+}
+
 void usage(const char *prog) {
-	printf("Usage: %s [--queue=<n>] [--sport=<port>] [--dport=<port>] [options]...\n\n", prog);
-	printf("Rewrite simple GRE packets as UDP and vice versa via NFQUEUE.\n\n");
-	printf("  -d, --dport=PORT	Intercept UDP packets on 'PORT'.\n");
-	printf("  -f, --df-bit=BIT	Set or clear IP do-not-fragment bit.\n");
-	printf("  -g, --ipv6-genflow    Generate new IPv6 flow labels (implies -n).\n");
-	printf("  -k, --key=KEY		Obfuscate UDP packet contents with KEY.\n");
-	printf("  -n, --ipv6-noflow     Clobber IPv6 flow label even when set.\n");
-	printf("  -m, --queue-maxlen=N	Set maximum queue length (default %u).\n", DEFAULT_QUEUE_MAXLEN);
-	printf("  -q, --queue-num=NFQ	Which queue number to use (default %u).\n", DEFAULT_QUEUE_NUM);
-	printf("  -r, --rcvbuf=SIZE	Set SO_RCVBUF size on NFQUEUE socket.\n");
-	printf("  -s, --sport=PORT	Emit UDP packets from 'PORT'.\n");
-	printf("  -t, --tos=TOS		Set IP type of service field to TOS.\n\n");
+	printf("Usage: %s --queue=<num>|--tapdev=<name> [options]...\n\n", prog);
+	printf("Rewrite simple GRE packets as UDP and vice versa.\n\n");
+	printf("  -c, --dscp=DSCP       Set differentiated services code point.\n");
+	printf("  -d, --dport=PORT      Intercept UDP packets on 'PORT'.\n");
+	printf("  -f, --df-bit=BIT      Set or clear IP do-not-fragment bit.\n");
+	printf("  -g, --ipv6-genflow    Generate new IPv6 flow labels (implies -z).\n");
+	printf("  -k, --key=KEY         Obfuscate UDP packet contents with KEY.\n");
+	printf("  -m, --queue-maxlen=N  Set netfilter maximum queue length (default %u).\n", DEFAULT_QUEUE_MAXLEN);
+	printf("  -q, --queue=NUM       Operate on netfilter queue NUM.\n");
+	printf("  -r, --rcvbuf=SIZE     Set SO_RCVBUF size on NFQUEUE socket.\n");
+	printf("  -s, --sport=PORT      Emit UDP packets from 'PORT'.\n");
+	printf("  -t, --tapdev=NAME     Operate on TAP device NAME.\n\n");
+	printf("  -z, --ipv6-noflow     Zap IPv6 flow label even when set.\n");
 	printf("Note: Due to the size difference between the simplest GRE and UDP\n");
 	printf("      headers, %s can only rewrite packets for which special\n", prog);
 	printf("      handlers have been written; at this time IPv4, IPv6, and\n");
@@ -306,11 +351,13 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		{ "sport",        required_argument, NULL, 's' },
 		{ "dport",        required_argument, NULL, 'd' },
 		{ "df-bit",       required_argument, NULL, 'f' },
-		{ "tos",          required_argument, NULL, 't' },
+		{ "dscp",         required_argument, NULL, 'c' },
 		{ "key",          required_argument, NULL, 'k' },
-		{ "queue",        required_argument, NULL, 'q' },
+		{ "queue",        optional_argument, NULL, 'q' },
+		{ "queue-maxlen", required_argument, NULL, 'm' },
+		{ "tapdev",       optional_argument, NULL, 't' },
 		{ "rcvbuf",       required_argument, NULL, 'r' },
-		{ "ipv6-noflow",  no_argument,       NULL, 'n' },
+		{ "ipv6-noflow",  no_argument,       NULL, 'z' },
 		{ "ipv6-genflow", no_argument,       NULL, 'g' },
 		{ "help",         no_argument,       NULL, 'h' },
 		{ "verbose",      no_argument,       NULL, 'v' },
@@ -324,7 +371,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		int n;
 		char *err;
 
-		if ((c = getopt_long(argc, argv, "s:d:f:t:k:q:r:m:nghv",
+		if ((c = getopt_long(argc, argv, "s:d:f:k:qtr:m:zghv",
 			options, &index)) < 0)
 			break;
 
@@ -363,29 +410,49 @@ int parse_args(int argc, char *argv[], struct config *conf)
 				exit(2);
 			}
 			break;
-		case 't':
+		case 'c':
 			n = strtol(optarg, &err, 0);
 			if (*err != 0) {
-				fprintf(stderr, "%s: %s: invalid value for type of service.\n", argv[0], optarg);
+				fprintf(stderr, "%s: %s: invalid value for DSCP.\n", argv[0], optarg);
 				exit(2);
-			} else if (n < 0 || n > 255) {
-				fprintf(stderr, "%s: %d: type of service is out of range.\n", argv[0], n);
+			} else if (n < 0 || n > 63) {
+				fprintf(stderr, "%s: %d: DSCP is out of range.\n", argv[0], n);
 				exit(2);
 			}
+			conf->dscp = n;
 			break;
 		case 'k':
 			conf->key = optarg;
 			break;
 		case 'q':
-			n = strtol(optarg, &err, 0);
-			if (*err != 0) {
-				fprintf(stderr, "%s: %s: invalid value for queue number.\n", argv[0], optarg);
-				exit(2);
-			} else if (n < 0 || n > 65535) {
-				fprintf(stderr, "%s: %d: queue number is out of range.\n", argv[0], n);
+			if (conf->tapdev) {
+				fprintf(stderr, "%s: queue cannot be used with tapdev.\n", argv[0]);
 				exit(2);
 			}
-			conf->queue = n;
+			conf->queue = DEFAULT_QUEUE_NUM;
+			if (!optarg && optind < argc && argv[optind] && argv[optind][0] && argv[optind][0] != '-') {
+				n = strtol(optarg, &err, 0);
+				if (*err != 0) {
+					fprintf(stderr, "%s: %s: invalid value for queue number.\n", argv[0], optarg);
+					exit(2);
+				} else if (n < 0 || n > 65535) {
+					fprintf(stderr, "%s: %d: queue number is out of range.\n", argv[0], n);
+					exit(2);
+				}
+				conf->queue = n;
+				optind++;
+			}
+			break;
+		case 't':
+			if (conf->queue > -1) {
+				fprintf(stderr, "%s: tapdev cannot be used with queue.\n", argv[0]);
+				exit(2);
+			}
+			conf->tapdev = DEFAULT_TAPDEV;
+			if (!optarg && optind < argc && argv[optind] && argv[optind][0] && argv[optind][0] != '-') {
+				conf->tapdev = argv[optind];
+				optind++;
+			}
 			break;
 		case 'm':
 			n = strtol(optarg, &err, 0);
@@ -409,7 +476,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 			}
 			conf->rcvbuf = n;
 			break;
-		case 'n':
+		case 'z':
 			conf->flow_labels = 1;
 			break;
 		case 'g':
@@ -422,10 +489,13 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		case 'v':
 			conf->verbose = 1;
 			break;
+		case '?':
 		default:
 			exit(2);
 			break;
 		}
+
+
 	}
 
 	return 0;
@@ -433,14 +503,17 @@ int parse_args(int argc, char *argv[], struct config *conf)
 
 int main(int argc, char *argv[])
 {
+	int rv;
+
 	struct config conf = {
-		.queue = DEFAULT_QUEUE_NUM,
+		.tapdev = NULL,
+		.queue = -1,
 		.queue_maxlen = DEFAULT_QUEUE_MAXLEN,
 		.sport = DEFAULT_PORT,
 		.dport = DEFAULT_PORT,
 		.key = NULL,
 		.df = -1,	  /* Don't mess with DF bit */
-		.tos = -1,	  /* Don't mess with TOS */
+		.dscp = -1,	  /* Don't mess with DSCP */
 		.rcvbuf = -1,	  /* Don't mess with SO_RCVBUF */
 		.flow_labels = 0, /* Don't mess with IPv6 if flowlabels are set */
 		.verbose = 0,
@@ -448,6 +521,15 @@ int main(int argc, char *argv[])
 
 	parse_args(argc, argv, &conf);
 
-	return do_nfqueue(&conf);
+	if (conf.queue > -1) {
+		rv = do_nfqueue(&conf);
+	} else if (conf.tapdev) {
+		rv = do_tuntap(&conf);
+	} else {
+		fprintf(stderr, "%s: one of -q or -t must be specified.\n", conf.prog);
+		exit(1);
+	}
+
+	return rv;
 }
 

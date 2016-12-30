@@ -1,8 +1,6 @@
 #if !defined(GREWRITE_H)
 # define GREWRITE_H
 
-#define DEFAULT_QUEUE_NUM 65109
-#define DEFAULT_QUEUE_MAXLEN 4096
 #define DEFAULT_PORT 22205
 
 #define ETHERTYPE_PPP 0x880b
@@ -13,13 +11,13 @@
 struct config {
 	const char *prog;
 	const char *tapdev;
-	uint16_t queue;
+	int queue;
 	uint32_t queue_maxlen;
 	uint16_t sport;
 	uint16_t dport;
 	const char *key;
 	int df;
-	int tos;
+	int dscp;
 	int rcvbuf;
 	int flow_labels;
 	int verbose;
@@ -74,6 +72,16 @@ static inline void udp_set_cksum(uint8_t *udphdr, uint16_t cksum)
 static inline uint8_t ip_get_version(const uint8_t *iphdr)
 {
 	return iphdr[0] >> 4;
+}
+
+static inline void ether_set_shost(uint8_t* ethhdr, const uint8_t *hwaddr)
+{
+	memcpy(ethhdr + ETH_ALEN, hwaddr, ETH_ALEN);
+}
+
+static inline uint16_t ether_get_ethertype(const uint8_t *ethhdr)
+{
+	return ntohs(*(const uint16_t *)(ethhdr + 12));
 }
 
 static inline uint8_t ip_get_hl(const uint8_t *iphdr)
@@ -252,25 +260,6 @@ static inline void hexdump(uint8_t *data, size_t len)
 
 }
 
-static inline int is_simple_ip_header(const uint8_t *iphdr)
-{
-        uint16_t frag = ip_get_frag(iphdr);
-
-        return ((frag >> 13) & 1) == 0 && (frag & 8191) == 0;
-}
-
-static inline int is_eligible_gre_header(uint8_t *grehdr)
-{
-        return grehdr[0] == 0 && grehdr[1] == 0;
-}
-
-static inline int is_eligible_udp_header(uint8_t *udphdr, struct config *conf)
-{
-        return udp_get_sport(udphdr) == conf->dport &&
-                udp_get_dport(udphdr) == conf->sport;
-}
-
-int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, struct config *conf);
-int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, struct config *conf);
+int transform_ip_packet(uint8_t *iphdr, size_t size, struct config *conf);
 
 #endif
