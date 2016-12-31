@@ -222,6 +222,8 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, size_t size, struc
 
 		if (conf->df > -1)
 			ip_set_df(iphdr, conf->df ? 1 : 0);
+		if (conf->dscp > -1)
+			ip_set_dscp(iphdr, conf->dscp);
 
 		ip_set_proto(iphdr, IPPROTO_UDP);
 		ip_recalc_cksum(iphdr);
@@ -371,7 +373,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		int n;
 		char *err;
 
-		if ((c = getopt_long(argc, argv, "s:d:f:k:qtr:m:zghv",
+		if ((c = getopt_long(argc, argv, "c:s:d:f:k:qtr:m:zghv",
 			options, &index)) < 0)
 			break;
 

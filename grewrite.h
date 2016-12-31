@@ -16,12 +16,11 @@ struct config {
 	uint16_t sport;
 	uint16_t dport;
 	const char *key;
-	int df;
-	int dscp;
+	int_least8_t df;
+	int_least8_t dscp;
+	int_least8_t flow_labels;
+	int_least8_t verbose;
 	int rcvbuf;
-	int flow_labels;
-	int verbose;
-	int check_rmem_max;
 };
 
 static inline uint16_t gre_get_proto(const uint8_t *grehdr)
@@ -106,10 +105,12 @@ static inline uint16_t ip_get_frag(const uint8_t *iphdr)
 
 static inline void ip_set_df(uint8_t *iphdr, uint8_t df)
 {
-	if (df)
-		iphdr[6] |= (1 << 6);
-	else
-		iphdr[6] &= ~(1 << 6);
+	iphdr[6] = (iphdr[6] & ~0x40) | (df & 1) << 6;
+}
+
+static inline void ip_set_dscp(uint8_t *iphdr, uint8_t dscp)
+{
+	iphdr[1] = (iphdr[1] & 3) | (dscp & 63) << 2;
 }
 
 static inline uint8_t ip_get_proto(const uint8_t *iphdr)
