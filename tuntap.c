@@ -35,6 +35,11 @@ static int link_up(struct ifreq *ifr)
 	return rv;
 }
 
+static int is_multicast_ether(const uint8_t *ethhdr)
+{
+	return *ethhdr & 1;
+}
+
 int do_tuntap(struct config *conf)
 {
 	int fd;
@@ -71,6 +76,9 @@ int do_tuntap(struct config *conf)
 	}
 
 	while ((r = read(fd, buf, sizeof(buf))) > 0) {
+		if (is_multicast_ether(buf))
+			continue;
+
 		/* We now have an ethernet frame. We only support IP at the moment */
 		if ((type = ether_get_ethertype(buf)) == ETHERTYPE_IP && r >= 20) {
 			transform_ip_packet(buf + 14, r - 14, conf);
