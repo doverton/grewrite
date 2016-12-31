@@ -12,8 +12,10 @@ done
 ovs-vsctl del-port "$bridge" "$tapdev" >&/dev/null
 
 # Setup
+output="output:"
 if [ ! -z "$vlan" ]; then
   ovs-vsctl add-port "$bridge" "$tapdev" "tag=$vlan"
+  output="strip_vlan,output:"
 else
   ovs-vsctl add-port "$bridge" "$tapdev"
 fi
@@ -23,5 +25,6 @@ if [ -z "$ofp" ]; then
   echo "$0: Can't find openflow port for $tapdev on $bridge" >& 2
   exit 1
 fi
+
 ovs-ofctl add-flow "$bridge" "dl_src=$mac,dl_type=0x0800,ip_proto=47,action=output:$ofp"
-ovs-ofctl add-flow "$bridge" "dl_dst=$mac,dl_type=0x0800,ip_proto=17,udp_dst=22205,action=output:$ofp"
+ovs-ofctl add-flow "$bridge" "dl_dst=$mac,dl_type=0x0800,ip_proto=17,udp_dst=22205,action=$output:$ofp"
