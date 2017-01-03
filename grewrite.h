@@ -7,6 +7,7 @@
 #define ETHERTYPE_ISO 0x00fe
 
 #define ISO_PROTO_ISIS 0x83
+#define ISO_PROTO_ESIS 0x82
 
 struct config {
 	const char *prog;
@@ -213,39 +214,64 @@ static inline void iso_set_version(uint8_t *isohdr, uint8_t version)
 	isohdr[2] = version;
 }
 
-static inline uint8_t iso_get_sysid_len(const uint8_t *isohdr)
+static inline uint8_t iso_isis_get_sysid_len(const uint8_t *isohdr)
 {
 	return isohdr[3];
 }
 
-static inline void iso_set_sysid_len(uint8_t *isohdr, uint8_t sysid_len)
+static inline void iso_isis_set_sysid_len(uint8_t *isohdr, uint8_t sysid_len)
 {
 	isohdr[3] = sysid_len;
 }
 
 static inline uint8_t iso_get_pdu_type(const uint8_t *isohdr)
 {
-	return isohdr[4];
+	return isohdr[4] & 31;
 }
 
-static inline uint8_t iso_get_version2(const uint8_t *isohdr)
+static inline void iso_set_pdu_type(uint8_t *isohdr, uint8_t pdu_type)
 {
-	return isohdr[5];
-}
-
-static inline void iso_set_version2(uint8_t *isohdr, uint8_t version2)
-{
-	isohdr[5] = version2;
+	isohdr[4] = (isohdr[4] & (7 << 5)) | (pdu_type & 31);
 }
 
 static inline uint8_t iso_get_reserved(const uint8_t *isohdr)
 {
-	return isohdr[6];
+	return isohdr[4] >> 5;
 }
 
 static inline void iso_set_reserved(uint8_t *isohdr, uint8_t reserved)
 {
-	isohdr[6] = reserved;
+	isohdr[4] = (reserved & 7) << 5 | (isohdr[4] & 31);
+}
+
+static inline uint8_t iso_isis_get_version2(const uint8_t *isohdr)
+{
+	return isohdr[5];
+}
+
+static inline void iso_isis_set_version2(uint8_t *isohdr, uint8_t version2)
+{
+	isohdr[5] = version2;
+}
+
+static inline uint8_t iso_isis_get_reserved2(const uint8_t *isohdr)
+{
+	return isohdr[6];
+}
+
+static inline void iso_isis_set_reserved2(uint8_t *isohdr, uint8_t reserved2)
+{
+	isohdr[6] = reserved2;
+}
+
+static inline uint16_t iso_esis_get_cksum(const uint8_t *isohdr)
+{
+	return ntohs(*(uint16_t *)(isohdr + 7));
+}
+
+static inline void iso_esis_set_cksum(uint8_t *isohdr, uint16_t cksum)
+{
+	*(uint16_t *)(isohdr + 7) = htons(cksum);
 }
 
 static inline void hexdump(uint8_t *data, size_t len)

@@ -35,8 +35,15 @@ static int is_eligible_iso_isis_header(uint8_t *isohdr)
 {
 	return iso_get_proto(isohdr) == ISO_PROTO_ISIS &&
 		iso_get_version(isohdr) == 1 &&
-		iso_get_sysid_len(isohdr) == 0 &&
-		iso_get_version2(isohdr) == 1 &&
+		iso_isis_get_sysid_len(isohdr) == 0 &&
+		iso_isis_get_version2(isohdr) == 1 &&
+		iso_isis_get_reserved2(isohdr) == 0;
+}
+
+static int is_eligible_iso_esis_header(uint8_t *isohdr)
+{
+	return iso_get_proto(isohdr) == ISO_PROTO_ESIS &&
+		iso_get_version(isohdr) == 1 &&
 		iso_get_reserved(isohdr) == 0;
 }
 
@@ -89,6 +96,36 @@ static void ip_recalc_cksum(uint8_t *iphdr)
 		cksum = (cksum & 0xffff) + (cksum >> 16);
 
 	ip_set_cksum(iphdr, ~cksum);
+}
+
+static void iso_esis_recalc_cksum(uint8_t *isohdr)
+{
+        uint64_t c0 = 0;
+        uint64_t c1 = 0;
+        uint8_t *ptr = isohdr;
+        uint8_t len = iso_get_pdu_hlen(isohdr);
+        int x;
+        int y;
+
+        iso_esis_set_cksum(isohdr, 0);
+
+        while (len-- > 0) {
+                c0 += *ptr++;
+                c1 += c0;
+        }
+
+        c0 %= 255;
+        c1 %= 255;
+
+        x = (((ptr - isohdr) - 8) * c0 - c1) % 255;
+        if (x <= 0)
+                x += 255;
+
+        y = (510 - c0 - x);
+        if (y > 255)
+                y -= 255;
+
+        iso_esis_set_cksum(isohdr, x << 8 | (y & 255));
 }
 
 static void ipv6_gen_flow_label(uint8_t *ip6hdr)
@@ -183,7 +220,7 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, size_t size, struc
 		 * payload length into the UDP header, 3rd and 4th octets of the
 		 * source address into the space left over from that, and then
 		 * the version and traffic class can move to where the address
-		 * octets lived - which puts them where the IPv4 checksum field,
+		 * octets lived - which puts them over the IPv4 checksum field,
 		 * giving the decoder a single place to hunt out the IP version.
 		 */
 		if (is_eligible_ipv6_header(inner, conf)) {
@@ -193,20 +230,33 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, size_t size, struc
 		}
 	} else if (type == ETHERTYPE_ISO) {
 		/*
-		 * Inner is an 8-byte ISO header - UDP clobbers protocol/
-		 * pdu_hlen/version/sysid_len. We first make sure this actually
-		 * is an IS-IS packet. If that's the case, the strategy is to
-		 * copy pdu_hlen to version2. sysid_len is required to be
-		 * zero for cisco, so we discard that and set reserved2 to
-		 * 255 (all 1s). This allows the decoder to distinguish this
-		 * from an IP packet where all 1s would indicate R/DF/MF flags
-		 * all set in IPv4 (an invalid combination), or IP proto 255
-		 * for IPv6, which is reserved.
+		 * Inner is an 8-byte ISO header, check for IS-IS or ES-IS.
 		 */
 		if (is_eligible_iso_isis_header(inner)) {
+			/*
+			 * IS-IS: UDP clobbers protocol/pdu_hlen/version/sysid_len.
+			 * Copy pdu_hlen to version2. sysid_len is required to be
+			 * zero for cisco, so we discard that and set reserved2 to
+			 * 255 (all 1s). This allows the decoder to distinguish this
+			 * from an IP packet where all 1s would indicate R/DF/MF flags
+			 * all set in IPv4 (an invalid combination), or IP proto 255
+			 * for IPv6, which is reserved.
+			 */
 			udp_len = ip_get_tot_len(iphdr) - (grehdr - iphdr);
-			iso_set_version2(inner, iso_get_pdu_hlen(inner));
-			iso_set_reserved(inner, 255);
+			iso_isis_set_version2(inner, iso_get_pdu_hlen(inner));
+			iso_isis_set_reserved2(inner, 255);
+		} else if (is_eligible_iso_esis_header(inner)) {
+			/*
+			 * ES-IS: UDP clobbers protocol/pdu_hlen/version/reserved.
+			 * Overwrite checksum field with pdu_hlen and 2nd hold time
+			 * byte. This byte overlaps IPv4 flags which is then used as
+			 * per IS-IS. Turn on all reserved bits so decoder knows
+			 * this should be ES-IS.
+			 */
+			udp_len = ip_get_tot_len(iphdr) - (grehdr - iphdr);
+			iso_set_reserved(inner, 7);
+			iso_esis_set_cksum(inner, iso_isis_get_reserved2(inner) << 8 | iso_get_pdu_hlen(inner));
+			iso_isis_set_reserved2(inner, 255);
 		}
 	}
 
@@ -247,16 +297,32 @@ static int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, size_t size, struc
 		if (conf->key)
 			bytes_transform_in(udphdr + 8, udp_len - 8, conf->key);
 
-		if (iso_get_pdu_type(inner) >> 5 == 0 && iso_get_reserved(inner) == 255) {
-			/* It's IS-IS, based on our transform rules (see above) */
-			type = ETHERTYPE_ISO;
+		if (iso_isis_get_reserved2(inner) == 255) {
+			/* It's ISO */
+			uint8_t reserved = iso_get_reserved(inner);
+			if (reserved == 0) {
+				/* It's IS-IS; reserved bits are not modified. */
+				type = ETHERTYPE_ISO;
 
-			iso_set_proto(inner, ISO_PROTO_ISIS);
-			iso_set_pdu_hlen(inner, iso_get_version2(inner));
-			iso_set_version(inner, 1);
-			iso_set_sysid_len(inner, 0);
-			iso_set_version2(inner, 1);
-			iso_set_reserved(inner, 0);
+				iso_set_proto(inner, ISO_PROTO_ISIS);
+				iso_set_pdu_hlen(inner, iso_isis_get_version2(inner));
+				iso_set_version(inner, 1);
+				iso_isis_set_sysid_len(inner, 0);
+				iso_isis_set_version2(inner, 1);
+				iso_isis_set_reserved2(inner, 0);
+			} else if (reserved == 7) {
+				/* It's ES-IS; reserved bits are all on. */
+				uint16_t time_hlen = iso_esis_get_cksum(inner);
+
+				type = ETHERTYPE_ISO;
+
+				iso_set_proto(inner, ISO_PROTO_ESIS);
+				iso_set_pdu_hlen(inner, time_hlen & 255);
+				iso_set_version(inner, 1);
+				iso_set_reserved(inner, 0);
+				iso_isis_set_reserved2(inner, time_hlen >> 8); /* restore holdtime */
+				iso_esis_recalc_cksum(inner);
+			}
 		} else {
 			/* It's IP */
 			*(uint16_t *)inner = ip_get_cksum(inner);
