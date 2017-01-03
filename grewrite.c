@@ -203,7 +203,7 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, size_t size, struc
 	uint16_t udp_len = 0;
 	uint8_t *inner = grehdr + 4;
 
-	if (type == ETHERTYPE_IP) {
+	if (type == ETHERTYPE_IP && size >= 24) {
 		/*
 		 * Inner is an IP header - UDP clobbers ver/ihl/tos/tot_len.
 		 * Strategy here is to copy ver/ihl/tos to the IP checksum
@@ -212,7 +212,7 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, size_t size, struc
 		 */
 		udp_len = ip_get_tot_len(inner) + 4;
 		ip_set_cksum(inner, *(uint16_t *)inner);
-	} else if (type == ETHERTYPE_IPV6) {
+	} else if (type == ETHERTYPE_IPV6 && size >= 44) {
 		/*
 		 * Inner is an IPv6 header - UDP clobbers version/tc/flow label.
 		 * We make sure flow labels aren't in use which give us 20 bits
@@ -228,7 +228,7 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, size_t size, struc
 			ipv6_set_payload_len(inner, ip_get_cksum(inner));
 			ip_set_cksum(inner, *(uint16_t *)inner);
 		}
-	} else if (type == ETHERTYPE_ISO) {
+	} else if (type == ETHERTYPE_ISO && size >= 12) {
 		/*
 		 * Inner is an 8-byte ISO header, check for IS-IS or ES-IS.
 		 */
@@ -260,7 +260,7 @@ static int gre_transform_udp(uint8_t *iphdr, uint8_t *grehdr, size_t size, struc
 		}
 	}
 
-	if (udp_len) {
+	if (udp_len && size >= udp_len) {
 		udp_set_sport(grehdr, conf->sport);
 		udp_set_dport(grehdr, conf->dport);
 		udp_set_len(grehdr, udp_len);
@@ -290,14 +290,14 @@ static int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, size_t size, struc
 	uint16_t udp_len = udp_get_len(udphdr);
 	uint16_t type = 0;
 
-	if (udp_len >= 16) {
+	if (size >= udp_len) {
 		/* Erase length and checksum to restore GRE header */
 		memset(udphdr, 0, 4);
 
 		if (conf->key)
 			bytes_transform_in(udphdr + 8, udp_len - 8, conf->key);
 
-		if (iso_isis_get_reserved2(inner) == 255) {
+		if (udp_len >= 12 && iso_isis_get_reserved2(inner) == 255) {
 			/* It's ISO */
 			uint8_t reserved = iso_get_reserved(inner);
 			if (reserved == 0) {
@@ -323,17 +323,17 @@ static int udp_transform_gre(uint8_t *iphdr, uint8_t *udphdr, size_t size, struc
 				iso_isis_set_reserved2(inner, time_hlen >> 8); /* restore holdtime */
 				iso_esis_recalc_cksum(inner);
 			}
-		} else {
+		} else if (udp_len >= 16) {
 			/* It's IP */
 			*(uint16_t *)inner = ip_get_cksum(inner);
 			uint8_t version = ip_get_version(inner);
 
-			if (version == 4) {
+			if (version == 4 && udp_len >= 24) {
 				type = ETHERTYPE_IP;
 
 				ip_set_tot_len(inner, udp_len - 4);
 				ip_recalc_cksum(inner);
-			} else if (version == 6) {
+			} else if (version == 6 && udp_len >= 44) {
 				type = ETHERTYPE_IPV6;
 
 				ip_set_cksum(inner, ipv6_get_payload_len(inner));
