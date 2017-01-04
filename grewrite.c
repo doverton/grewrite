@@ -396,8 +396,8 @@ void usage(const char *prog) {
 	printf("  -q, --queue=NUM       Operate on netfilter queue NUM.\n");
 	printf("  -r, --rcvbuf=SIZE     Set SO_RCVBUF size on NFQUEUE socket.\n");
 	printf("  -s, --sport=PORT      Emit UDP packets from 'PORT'.\n");
-	printf("  -t, --tapdev=NAME     Operate on TAP device NAME.\n\n");
-	printf("  -z, --ipv6-noflow     Zap IPv6 flow label even when set.\n");
+	printf("  -t, --tapdev=NAME     Operate on TAP device NAME.\n");
+	printf("  -z, --ipv6-noflow     Zap IPv6 flow label even when set.\n\n");
 	printf("Note: Due to the size difference between the simplest GRE and UDP\n");
 	printf("      headers, %s can only rewrite packets for which special\n", prog);
 	printf("      handlers have been written; at this time IPv4, IPv6, and\n");
@@ -499,7 +499,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 			}
 			conf->queue = DEFAULT_QUEUE_NUM;
 			if (!optarg && optind < argc && argv[optind] && argv[optind][0] && argv[optind][0] != '-') {
-				n = strtol(optarg, &err, 0);
+				n = strtol(argv[optind], &err, 0);
 				if (*err != 0) {
 					fprintf(stderr, "%s: %s: invalid value for queue number.\n", argv[0], optarg);
 					exit(2);

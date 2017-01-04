@@ -80,7 +80,7 @@ int do_tuntap(struct config *conf)
 			continue;
 
 		/* We now have an ethernet frame. We only support IP at the moment */
-		if ((type = ether_get_ethertype(buf)) == ETHERTYPE_IP && r >= 20) {
+		if ((type = ether_get_ethertype(buf)) == ETHERTYPE_IP && r >= 34) {
 			transform_ip_packet(buf + 14, r - 14, conf);
 		} else {
 			if (conf->verbose)

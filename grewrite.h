@@ -274,19 +274,6 @@ static inline void iso_esis_set_cksum(uint8_t *isohdr, uint16_t cksum)
 	*(uint16_t *)(isohdr + 7) = htons(cksum);
 }
 
-static inline void hexdump(uint8_t *data, size_t len)
-{
-        for (size_t i = 0; i < len; i++) {
-                if (i % 8 == 0)
-                        printf(" ");
-                else if (i % 16 == 0)
-                        printf("\n");
-                printf("%02x ", data[i]);
-        }
-        printf("\n");
-
-}
-
 int transform_ip_packet(uint8_t *iphdr, size_t size, struct config *conf);
 
 #endif
