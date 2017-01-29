@@ -148,15 +148,15 @@ static void ipv6_gen_flow_label(uint8_t *ip6hdr)
 	}
 
 	for (int i = 0; i < 16; i++) {
-		label = ((label << 5) + label) + src->s6_addr[i];
-		label = ((label << 5) + label) + dst->s6_addr[i];
+		label = ((label << 5) + label) ^ src->s6_addr[i];
+		label = ((label << 5) + label) ^ dst->s6_addr[i];
 	}
 
-	label = ((label << 5) + label) + (sport & 0xff);
-	label = ((label << 5) + label) + (dport & 0xff);
-	label = ((label << 5) + label) + ((sport >> 8) & 0xff);
-	label = ((label << 5) + label) + ((dport >> 8) & 0xff);
-	label = ((label << 5) + label) + proto;
+	label = ((label << 5) + label) ^ (sport & 0xff);
+	label = ((label << 5) + label) ^ (dport & 0xff);
+	label = ((label << 5) + label) ^ ((sport >> 8) & 0xff);
+	label = ((label << 5) + label) ^ ((dport >> 8) & 0xff);
+	label = ((label << 5) + label) ^ proto;
 
 	label &= 0xfffff;
 

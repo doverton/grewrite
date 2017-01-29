@@ -56,7 +56,7 @@ int do_nfqueue(struct config *conf)
 		exit(1);
 	}
 
-	if ((qh = nfq_create_queue(h, conf->queue, cb, &conf)) == NULL) {
+	if ((qh = nfq_create_queue(h, conf->queue, cb, conf)) == NULL) {
 		fprintf(stderr, "%s: failed to create queue", conf->prog);
 		exit(1);
 	}

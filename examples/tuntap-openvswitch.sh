@@ -1,30 +1,44 @@
 #!/bin/sh
 
-bridge=br0
-mac=f2:43:fc:75:99:2a
-tapdev=grewrite0
-vlan=2099
+BRIDGE=br0
+MAC=52:54:00:11:22:33
+TAPDEV=grewrite0
+UDP_PORT=22205
+#VLAN=1234
 
-# Clean up
-for flow in `ovs-ofctl dump-flows "$bridge" | grep actions | grep -v NORMAL | grep "$mac" | cut -d, -f7-| awk '{ print $1 }' | cut -d, -f2-`; do
-  ovs-ofctl del-flows "$bridge" "$flow" >&/dev/null
+# Clean up - careful! This removes all action=output flows that mention the MAC above.
+for flow in $(ovs-ofctl dump-flows "$BRIDGE" | egrep "$MAC.+actions=output" | grep actions=output | awk '{ print $7 }'); do
+  ovs-ofctl del-flows "$BRIDGE" "$flow" >&/dev/null
 done
-ovs-vsctl del-port "$bridge" "$tapdev" >&/dev/null
+ovs-vsctl del-port "$BRIDGE" "$TAPDEV" >&/dev/null
 
 # Setup
-output="output:"
-if [ ! -z "$vlan" ]; then
-  ovs-vsctl add-port "$bridge" "$tapdev" "tag=$vlan"
-  output="strip_vlan,output:"
-else
-  ovs-vsctl add-port "$bridge" "$tapdev"
-fi
-
-ofp=$(ovs-ofctl show "$bridge" | grep "$tapdev" | cut -d\( -f1 | cut -d\  -f2)
-if [ -z "$ofp" ]; then
-  echo "$0: Can't find openflow port for $tapdev on $bridge" >& 2
+if ! grep -q "$TAPDEV" /proc/net/dev; then
+  echo "You must create $TAPDEV first, either by running grewrite (interface is " >&2
+  echo "removed when grewrite terminate), or by using 'ip tuntap add $TAPDEV mode tap'" >&2
   exit 1
 fi
 
-ovs-ofctl add-flow "$bridge" "dl_src=$mac,dl_type=0x0800,ip_proto=47,action=output:$ofp"
-ovs-ofctl add-flow "$bridge" "dl_dst=$mac,dl_type=0x0800,ip_proto=17,udp_dst=22205,action=$output:$ofp"
+output="output"
+if [ ! -z "$VLAN" ]; then
+  ovs-vsctl add-port "$BRIDGE" "$TAPDEV" "tag=$VLAN"
+  output="strip_vlan,output"
+else
+  ovs-vsctl add-port "$BRIDGE" "$TAPDEV"
+fi
+
+ofp=$(ovs-ofctl show "$BRIDGE" | grep "$TAPDEV" | cut -d\( -f1 | cut -d\  -f2)
+if [ -z "$ofp" ]; then
+  echo "$0: Can't find openflow port for $TAPDEV on $BRIDGE" >& 2
+  exit 1
+fi
+
+# Send GRE packets to our TAP device. The assumption is they are being transmitted
+# on to the switch untagged.
+ovs-ofctl add-flow "$BRIDGE" "ip,dl_src=$MAC,nw_proto=47,action=output:$ofp"
+
+# Send UDP port $UDP_PORT traffic to TAP device. If $VLAN is set above, the
+# assumption is that we acquire the packet as it enters the switch, therefore the
+# tag must be removed. When the packet is transmitted back to the switch from the
+# TAP deviceit will be retagged by virtue of being on the port.
+ovs-ofctl add-flow "$BRIDGE" "udp,dl_dst=$MAC,tp_dst=$UDP_PORT,action=$output:$ofp"
