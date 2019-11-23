@@ -1,5 +1,5 @@
 /*
- * (C) 2017 David Overton <david@insomniavisions.com>
+ * (C) 2017-2019 David Overton <david@insomniavisions.com>
  *
  * This file is part of grewrite.
  *
@@ -26,11 +26,10 @@
 #include <arpa/inet.h>
 #include <net/ethernet.h>
 #include <netinet/in.h>
-#include <linux/ip.h>
-#include <linux/udp.h>
 #include "grewrite.h"
 #include "nfqueue.h"
 #include "tuntap.h"
+#include "pcap.h"
 
 static int is_simple_ip_header(const uint8_t *iphdr)
 {
@@ -404,14 +403,16 @@ int transform_ip_packet(uint8_t *iphdr, size_t size, struct config *conf)
 }
 
 void usage(const char *prog) {
-	printf("Usage: %s --queue=<num>|--tapdev=<name> [options]...\n\n", prog);
+	printf("Usage: %s --queue=<num>|--tapdev=<name>|--pcap=<what> [options]...\n\n", prog);
 	printf("Rewrite simple GRE packets as UDP and vice versa.\n\n");
 	printf("  -c, --dscp=DSCP       Set differentiated services code point.\n");
 	printf("  -d, --dport=PORT      Intercept UDP packets on 'PORT'.\n");
 	printf("  -f, --df-bit=BIT      Set or clear IP do-not-fragment bit.\n");
 	printf("  -g, --ipv6-genflow    Generate new IPv6 flow labels (implies -z).\n");
 	printf("  -k, --key=KEY         Obfuscate UDP packet contents with KEY.\n");
-	printf("  -m, --queue-maxlen=N  Set netfilter maximum queue length (default %u).\n", DEFAULT_QUEUE_MAXLEN);
+	printf("  -m, --queue-maxlen=N  Set netfilter maximum queue length (default %u).\n",
+			DEFAULT_QUEUE_MAXLEN);
+	printf("  -p, --pcap=WHAT       Capture from network device or file.\n");
 	printf("  -q, --queue=NUM       Operate on netfilter queue NUM.\n");
 	printf("  -r, --rcvbuf=SIZE     Set SO_RCVBUF size on NFQUEUE socket.\n");
 	printf("  -s, --sport=PORT      Emit UDP packets from 'PORT'.\n");
@@ -443,6 +444,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		{ "queue",        optional_argument, NULL, 'q' },
 		{ "queue-maxlen", required_argument, NULL, 'm' },
 		{ "tapdev",       optional_argument, NULL, 't' },
+		{ "pcap",         optional_argument, NULL, 'p' },
 		{ "rcvbuf",       required_argument, NULL, 'r' },
 		{ "ipv6-noflow",  no_argument,       NULL, 'z' },
 		{ "ipv6-genflow", no_argument,       NULL, 'g' },
@@ -458,7 +460,7 @@ int parse_args(int argc, char *argv[], struct config *conf)
 		int n;
 		char *err;
 
-		if ((c = getopt_long(argc, argv, "c:s:d:f:k:qtr:m:zghv",
+		if ((c = getopt_long(argc, argv, "c:s:d:f:k:qtpr:m:zghv",
 			options, &index)) < 0)
 			break;
 
@@ -493,7 +495,8 @@ int parse_args(int argc, char *argv[], struct config *conf)
 					strcasecmp(optarg, "false") == 0) {
 				conf->df = 0;
 			} else {
-				fprintf(stderr, "%s: %s: invalid option for don't fragment bit.\n", argv[0], optarg);
+				fprintf(stderr, "%s: %s: invalid option for don't fragment bit.\n",
+						argv[0], optarg);
 				exit(2);
 			}
 			break;
@@ -515,6 +518,9 @@ int parse_args(int argc, char *argv[], struct config *conf)
 			if (conf->tapdev) {
 				fprintf(stderr, "%s: queue cannot be used with tapdev.\n", argv[0]);
 				exit(2);
+			} else if (conf->pcap) {
+				fprintf(stderr, "%s: queue cannot be used with pcap.\n", argv[0]);
+				exit(2);
 			}
 			conf->queue = DEFAULT_QUEUE_NUM;
 			if (!optarg && optind < argc && argv[optind] && argv[optind][0] && argv[optind][0] != '-') {
@@ -534,10 +540,27 @@ int parse_args(int argc, char *argv[], struct config *conf)
 			if (conf->queue > -1) {
 				fprintf(stderr, "%s: tapdev cannot be used with queue.\n", argv[0]);
 				exit(2);
+			} else if (conf->pcap) {
+				fprintf(stderr, "%s: tapdev cannot be used with pcap.\n", argv[0]);
+				exit(2);
 			}
 			conf->tapdev = DEFAULT_TAPDEV;
 			if (!optarg && optind < argc && argv[optind] && argv[optind][0] && argv[optind][0] != '-') {
 				conf->tapdev = argv[optind];
+				optind++;
+			}
+			break;
+		case 'p':
+			if (conf->queue > -1) {
+				fprintf(stderr, "%s: pcap cannot be used with queue.\n", argv[0]);
+				exit(2);
+			} else if (conf->tapdev) {
+				fprintf(stderr, "%s: pcap cannot be used with tapdev.\n", argv[0]);
+				exit(2);
+			}
+			conf->pcap = DEFAULT_PCAP_DEVICE;
+			if (!optarg && optind < argc && argv[optind] && argv[optind][0] && argv[optind][0] != '-') {
+				conf->pcap = argv[optind];
 				optind++;
 			}
 			break;
@@ -593,9 +616,10 @@ int main(int argc, char *argv[])
 	int rv;
 
 	struct config conf = {
-		.tapdev = NULL,
 		.queue = -1,
 		.queue_maxlen = DEFAULT_QUEUE_MAXLEN,
+		.tapdev = NULL,
+		.pcap = NULL,
 		.sport = DEFAULT_PORT,
 		.dport = DEFAULT_PORT,
 		.key = NULL,
@@ -612,8 +636,10 @@ int main(int argc, char *argv[])
 		rv = do_nfqueue(&conf);
 	} else if (conf.tapdev) {
 		rv = do_tuntap(&conf);
+	} else if (conf.pcap) {
+		rv = do_pcap(&conf);
 	} else {
-		fprintf(stderr, "%s: one of -q or -t must be specified.\n", conf.prog);
+		fprintf(stderr, "%s: one of -p, -q, or -t must be specified.\n", conf.prog);
 		exit(1);
 	}
 

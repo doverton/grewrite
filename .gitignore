@@ -9,3 +9,5 @@ install-sh
 missing
 *.o
 grewrite
+.vagrant
+.gitattributes

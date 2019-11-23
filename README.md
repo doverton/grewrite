@@ -76,6 +76,18 @@ See the file examples/tuntap-openvswitch.sh for how to use this
 mechanism with openvswitch.
 
 
+PCAP Mode
+---------
+
+When using PCAP mode, grewrite listens to either a network device or a pcap
+savefile and tranforms between GRE and UDP packets directed at the device.
+Transformed packets are written to stdout in libpcap savefile format.
+
+The PCAP data source argument is considered file if it starts with a dot or
+a forward slash, otherwise it is assumed the argument is the name of a network
+device.
+
+
 Caveats
 -------
 
@@ -106,11 +118,10 @@ preserved.
 Useful RFCs
 -----------
 
-IPv4 - https://tools.ietf.org/html/rfc791
-IPv6 - https://tools.ietf.org/html/rfc2460
-IPv6 flow labels - https://tools.ietf.org/html/rfc6437
-GRE - https://tools.ietf.org/html/rfc2890
-UDP - https://tools.ietf.org/html/rfc768
-Fletcher checksum - https://tools.ietf.org/html/rfc1008
-
+* IPv4 - https://tools.ietf.org/html/rfc791
+* IPv6 - https://tools.ietf.org/html/rfc2460
+* IPv6 flow labels - https://tools.ietf.org/html/rfc6437
+* GRE - https://tools.ietf.org/html/rfc2890
+* UDP - https://tools.ietf.org/html/rfc768
+* Fletcher checksum - https://tools.ietf.org/html/rfc1008
 

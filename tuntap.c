@@ -37,6 +37,8 @@
 #include "tuntap.h"
 
 #define TUNDEV "/dev/net/tun"
+#define IP_MIN_HDR_LEN 20
+#define MIN_PACKET_LEN ((ETHER_HDR_LEN) + (IP_MIN_HDR_LEN))
 
 static int link_up(struct ifreq *ifr)
 {
@@ -82,7 +84,7 @@ int do_tuntap(struct config *conf)
 	}
 
 	if (ioctl(fd, SIOCGIFHWADDR, &ifr) < 0) {
-		fprintf(stderr, "%s: %s: failed to get hardwareaddress: %s\n",
+		fprintf(stderr, "%s: %s: failed to get hardware address: %s\n",
 			conf->prog, conf->tapdev, strerror(errno));
 		exit(1);
 	}
@@ -98,12 +100,14 @@ int do_tuntap(struct config *conf)
 			continue;
 
 		/* We now have an ethernet frame. We only support IP at the moment */
-		if ((type = ether_get_ethertype(buf)) == ETHERTYPE_IP && r >= 34) {
-			transform_ip_packet(buf + 14, r - 14, conf);
+		if ((type = ether_get_ethertype(buf)) == ETHERTYPE_IP && r >= MIN_PACKET_LEN) {
+			if (transform_ip_packet(buf + ETHER_HDR_LEN, r - ETHER_HDR_LEN, conf) < 0)
+				continue;
 		} else {
 			if (conf->verbose)
 				fprintf(stderr, "%s: ignoring %d byte packet with type 0x%04x\n",
 					conf->prog, r, type);
+			continue;
 		}
 
 		/* Write the frame back out with own MAC address */

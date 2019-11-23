@@ -1,5 +1,5 @@
 /*
- * (C) 2017 David Overton <david@insomniavisions.com>
+ * (C) 2017-2019 David Overton <david@insomniavisions.com>
  *
  * This file is part of grewrite.
  *
@@ -27,9 +27,14 @@
 #define ISO_PROTO_ISIS 0x83
 #define ISO_PROTO_ESIS 0x82
 
+#if !defined IPPROTO_UDPLITE
+# define IPPROTO_UDPLITE 136
+#endif
+
 struct config {
 	const char *prog;
 	const char *tapdev;
+	const char *pcap;
 	int queue;
 	uint32_t queue_maxlen;
 	uint16_t sport;
@@ -94,7 +99,7 @@ static inline uint8_t ip_get_version(const uint8_t *iphdr)
 
 static inline void ether_set_shost(uint8_t* ethhdr, const uint8_t *hwaddr)
 {
-	memcpy(ethhdr + ETH_ALEN, hwaddr, ETH_ALEN);
+	memcpy(ethhdr + ETHER_ADDR_LEN, hwaddr, ETHER_ADDR_LEN);
 }
 
 static inline uint16_t ether_get_ethertype(const uint8_t *ethhdr)
